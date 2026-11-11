@@ -12,6 +12,10 @@ export default async function LobbyPage() {
     <main>
       <h1>Heist Lobby</h1>
       <p>Welcome, {session.displayName}.</p>
+      <form action="/api/auth/logout" method="post">
+        <button type="submit">Sign out</button>
+      </form>
     </main>
+    
   );
 }
