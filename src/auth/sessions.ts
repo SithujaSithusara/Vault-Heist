@@ -76,3 +76,12 @@ export async function getCurrentSession() {
 
   return session ?? null;
 }
+
+export async function revokeSession(token: string): Promise<void> {
+  await db.update(appSessions)
+    .set({ revokedAt: new Date() })
+    .where(and(
+      eq(appSessions.tokenHash, hashToken(token)),
+      isNull(appSessions.revokedAt),
+    ));
+}
