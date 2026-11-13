@@ -8,12 +8,18 @@ import { getCurrentSession } from '@/src/auth/sessions';
 const panel = 'rounded-3xl border-[3px] border-heist-ink bg-heist-panel';
 const label = 'font-heist-mono text-xs font-medium uppercase';
 
-export default async function LobbyPage() {
+type LobbyPageProps = {
+  searchParams: Promise<{ heist?: string | string[] }>;
+};
+
+export default async function LobbyPage({ searchParams }: LobbyPageProps) {
   const session = await getCurrentSession();
 
   if (!session) {
     redirect('/');
   }
+
+  const { heist } = await searchParams;
 
   return (
     <div className="min-h-svh bg-heist-bg font-heist-body font-bold text-heist-cream">
@@ -25,6 +31,11 @@ export default async function LobbyPage() {
           <h1 className="mt-4 font-heist-display text-[clamp(2rem,4vw,3rem)] leading-[1.08] font-semibold">
             Ready for a little monkey business?
           </h1>
+          {heist === 'already-open' && (
+            <p role="status" className="mt-4 font-bold text-heist-yellow">
+              You already have an open heist. Finish or cancel it in the session that opened it.
+            </p>
+          )}
 
           <div className="mt-10 grid gap-6 lg:grid-cols-[minmax(0,770fr)_minmax(0,498fr)] xl:mt-[42px] xl:gap-7">
             <section
@@ -57,13 +68,18 @@ export default async function LobbyPage() {
                 className="mx-auto mt-4 h-auto w-full max-w-[343px] xl:absolute xl:top-[107px] xl:right-[49px] xl:mt-0 xl:w-[45%]"
               />
 
-              <Button
-                type="button"
-                disabled
-                className="relative z-10 mt-5 h-16 w-full max-w-[292px] self-start rounded-xl border-[3px] border-heist-ink bg-heist-yellow text-lg font-extrabold text-heist-ink shadow-heist-button disabled:cursor-not-allowed disabled:opacity-100 xl:mt-0"
+              <form
+                action="/api/heists/prepare"
+                method="post"
+                className="relative z-10 mt-5 w-full max-w-[292px] self-start xl:mt-0"
               >
-                Start heist
-              </Button>
+                <Button
+                  type="submit"
+                  className="h-16 w-full cursor-pointer rounded-xl border-[3px] border-heist-ink bg-heist-yellow text-lg font-extrabold text-heist-ink shadow-heist-button hover:bg-heist-yellow/90"
+                >
+                  Start heist
+                </Button>
+              </form>
             </section>
 
             <div className="grid min-w-0 gap-[22px]">
