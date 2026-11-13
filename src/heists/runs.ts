@@ -2,6 +2,7 @@ import 'server-only';
 import { and, eq, gt, inArray, isNull } from 'drizzle-orm';
 import { db } from '@/src/db';
 import { appSessions, heistRuns, players, runTerminals } from '@/src/db/schema';
+import { revokeSession } from '../auth/sessions';
 
 type RunOwner = {
   playerId: string;
@@ -111,3 +112,70 @@ export async function cancelPreparation(owner: RunOwner, runId: string) {
       eq(heistRuns.status, 'preparing'),
     ));
 }
+
+export async function startHeist(owner: RunOwner, runId:string){
+    return db.transaction(async(tx)=> {
+        const [session] = await tx.select ({
+            expiresAt: appSessions.expiresAt,
+            revokedAt: appSessions.revokedAt,
+        })
+        .from(appSessions)
+        .where(and(eq(appSessions.id, owner.sessionId),eq(appSessions.playerId, owner.playerId)))
+        .for("update");
+
+        const now = new Date();
+
+        if(!session || session.revokedAt || session.expiresAt <= now) {
+      return 'signed-out' as const;
+    }
+
+    const [started] = await tx.update(heistRuns)
+      .set({ status: 'active', startedAt: now })
+      .where(and(
+        eq(heistRuns.id, runId),
+        eq(heistRuns.playerId, owner.playerId),
+        eq(heistRuns.sessionId, owner.sessionId),
+        eq(heistRuns.status, 'preparing'),
+        isNull(heistRuns.startedAt),
+      ))
+      .returning({ id: heistRuns.id });
+
+    if (started) return 'active' as const;
+    const [existing] = await tx.select({ startedAt: heistRuns.startedAt })
+      .from(heistRuns)
+      .where(and(
+        eq(heistRuns.id, runId),
+        eq(heistRuns.playerId, owner.playerId),
+        eq(heistRuns.sessionId, owner.sessionId),
+        eq(heistRuns.status, 'active'),
+      ));
+
+    return existing?.startedAt ? 'active' as const : 'unavailable' as const;
+  });
+}
+
+export async function getActiveHeist(owner: RunOwner, runId: string) {
+  const [run] = await db.select({ startedAt: heistRuns.startedAt })
+    .from(heistRuns)
+    .where(and(
+      eq(heistRuns.id, runId),
+      eq(heistRuns.playerId, owner.playerId),
+      eq(heistRuns.sessionId, owner.sessionId),
+      eq(heistRuns.status, 'active'),
+    ));
+
+  return run?.startedAt ? { startedAt: run.startedAt } : null;
+}
+
+export async function abandonActiveHeist(owner: RunOwner, runId: string) {
+  await db.update(heistRuns)
+    .set({ status: 'abandoned', endedAt: new Date() })
+    .where(and(
+      eq(heistRuns.id, runId),
+      eq(heistRuns.playerId, owner.playerId),
+      eq(heistRuns.sessionId, owner.sessionId),
+      eq(heistRuns.status, 'active'),
+    ));
+}
+    
+

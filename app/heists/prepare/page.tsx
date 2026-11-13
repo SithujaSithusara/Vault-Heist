@@ -2,7 +2,7 @@ import { redirect } from 'next/navigation';
 import { PortalHeader } from '@/components/portal/portalHeader';
 import { Button } from '@/components/ui/button';
 import { getCurrentSession } from '@/src/auth/sessions';
-import { cancelPreparation, getPreparingHeist } from '@/src/heists/runs';
+import { cancelPreparation, getPreparingHeist, startHeist } from '@/src/heists/runs';
 
 type PreparePageProps = {
   searchParams: Promise<{ run?: string | string[] }>;
@@ -30,6 +30,19 @@ export default async function PreparePage({ searchParams }: PreparePageProps) {
     redirect('/lobby');
   }
 
+  async function enterVault() {
+    'use server';
+    const currentSession = await getCurrentSession();
+    if (!currentSession) redirect('/');
+
+    const outcome = await startHeist(currentSession, run as string);
+
+    if (outcome === 'signed-out') redirect('/');
+    if (outcome === 'unavailable') redirect('/lobby');
+
+    redirect(`/heists/play?run=${run}`);
+  }
+
   return (
     <div className="min-h-svh bg-heist-bg font-heist-body text-heist-cream">
       <PortalHeader />
@@ -48,6 +61,14 @@ export default async function PreparePage({ searchParams }: PreparePageProps) {
               </li>
             ))}
           </ol>
+          <form action={enterVault} className="mt-6">
+            <Button
+              type="submit"
+              className="h-14 cursor-pointer rounded-xl border-[3px] border-heist-ink bg-heist-yellow px-6 font-extrabold text-heist-ink shadow-heist-button hover:bg-heist-yellow/90"
+            >
+              Enter Vault
+            </Button>
+          </form>
           <form action={cancel} className="mt-6">
             <Button type="submit" variant="outline" className="cursor-pointer">
               Cancel and return to lobby
