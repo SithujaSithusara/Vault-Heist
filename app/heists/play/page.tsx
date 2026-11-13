@@ -2,6 +2,7 @@ import { redirect } from 'next/navigation';
 import { Button } from '@/components/ui/button';
 import { getCurrentSession } from '@/src/auth/sessions';
 import { abandonActiveHeist, getActiveHeist } from '@/src/heists/runs';
+import { HeistTimer } from '@/components/heists/heistTimer';
 
 type PlayPageProps = {
   searchParams: Promise<{ run?: string | string[] }>;
@@ -28,7 +29,7 @@ export default async function PlayPage({ searchParams }: PlayPageProps) {
     redirect('/lobby');
   }
 
-  const startedAt = activeRun.startedAt.toISOString();
+  const initialElapsedMs = Math.max(0, Date.now() - activeRun.startedAt.getTime());
 
   return (
     <main className="grid min-h-svh place-items-center bg-heist-bg px-6 py-12 font-heist-body text-heist-cream">
@@ -38,10 +39,8 @@ export default async function PlayPage({ searchParams }: PlayPageProps) {
         </h1>
         <p className="mt-3 text-heist-muted">
           Run started at{' '}
-          <time dateTime={startedAt} className="font-heist-mono">
-            {startedAt.slice(11, 19)} UTC
-          </time>
         </p>
+        <HeistTimer key={`${run}:${initialElapsedMs}`} initialElapsedMs={initialElapsedMs} />
 
         <form action={abandon} className="mt-6">
           <Button type="submit" variant="outline" className="cursor-pointer">
