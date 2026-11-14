@@ -1,5 +1,5 @@
 import 'server-only';
-import { and, eq, isNull } from 'drizzle-orm';
+import { and, count, eq, isNull, sql } from 'drizzle-orm';
 import { db } from '@/src/db';
 import { appSessions, heistRuns, puzzleAssignments, puzzleSubmissions, runTerminals } from '@/src/db/schema';
 import { fetchBananaPuzzle } from './bananaApi';
@@ -9,44 +9,47 @@ type RunOwner = {
   sessionId: string;
 };
 
-export async function getTerminalOneAssignment(
-  owner: RunOwner,
-  runId: string,
-) {
-  const [assignment] = await db
-    .select({ id: puzzleAssignments.id })
-    .from(puzzleAssignments)
-    .innerJoin(heistRuns, eq(heistRuns.id, puzzleAssignments.runId))
-    .where(and(
-      eq(heistRuns.id, runId),
-      eq(heistRuns.playerId, owner.playerId),
-      eq(heistRuns.sessionId, owner.sessionId),
-      eq(heistRuns.status, 'active'),
-      eq(puzzleAssignments.slot, 1),
-      isNull(puzzleAssignments.retiredAt),
-    ));
-
-  return assignment ?? null;
+export async function prepareTerminalOne(owner: RunOwner, runId: string) {
+  return assignTerminalOne(owner, runId, 'preparing');
 }
 
-export async function prepareTerminalOne(owner: RunOwner, runId: string) {
-  const ownedPreparation = and(
+export async function replaceTerminalOne(owner: RunOwner, runId: string) {
+  return assignTerminalOne(owner, runId, 'active');
+}
+
+async function assignTerminalOne(
+  owner: RunOwner,
+  runId: string,
+  runStatus: 'preparing' | 'active',
+) {
+  const ownedRun = and(
     eq(heistRuns.id, runId),
     eq(heistRuns.playerId, owner.playerId),
     eq(heistRuns.sessionId, owner.sessionId),
-    eq(heistRuns.status, 'preparing'),
+    eq(heistRuns.status, runStatus),
   );
 
-  const [terminal] = await db.select({ status: runTerminals.status })
+  const terminalFields = {
+    status: runTerminals.status,
+    cooldownUntil: runTerminals.cooldownUntil,
+  };
+  const terminalSlot = and(eq(runTerminals.runId, runId), eq(runTerminals.slot, 1));
+  const [terminal] = await db.select(terminalFields)
     .from(heistRuns)
     .innerJoin(runTerminals, and(
       eq(runTerminals.runId, heistRuns.id),
       eq(runTerminals.slot, 1),
     ))
-    .where(ownedPreparation);
+    .where(ownedRun);
 
   if (!terminal) return 'unavailable';
   if (terminal.status === 'ready') return 'ready';
+  const expectedStatus = runStatus === 'preparing' ? 'waiting' : 'cooldown';
+  if (terminal.status !== expectedStatus) return 'unavailable';
+  const cooldownEnd = terminal.cooldownUntil?.getTime();
+  if (runStatus === 'active' && (cooldownEnd === undefined || cooldownEnd > Date.now())) {
+    return 'cooldown';
+  }
 
   let puzzle: Awaited<ReturnType<typeof fetchBananaPuzzle>>;
   try {
@@ -73,26 +76,26 @@ export async function prepareTerminalOne(owner: RunOwner, runId: string) {
 
     const [lockedRun] = await tx.select({ id: heistRuns.id })
       .from(heistRuns)
-      .where(ownedPreparation)
+      .where(ownedRun)
       .for('update');
 
     if (!lockedRun) return 'unavailable';
 
-    const [existing] = await tx.select({ id: puzzleAssignments.id })
-      .from(puzzleAssignments)
-      .where(and(
-        eq(puzzleAssignments.runId, runId),
-        eq(puzzleAssignments.slot, 1),
-        isNull(puzzleAssignments.retiredAt),
-      ));
+    const [current] = await tx.select(terminalFields)
+      .from(runTerminals)
+      .where(terminalSlot);
 
-    if (existing) return 'ready';
+    if (current?.status === 'ready') return 'ready';
+    if (current?.status !== expectedStatus ||
+        current.cooldownUntil?.getTime() !== cooldownEnd) {
+      return 'unavailable';
+    }
 
     await tx.insert(puzzleAssignments).values({ runId, slot: 1, ...puzzle });
 
     await tx.update(runTerminals)
-      .set({ status: 'ready' })
-      .where(and(eq(runTerminals.runId, runId), eq(runTerminals.slot, 1)));
+      .set({ status: 'ready', cooldownUntil: null })
+      .where(terminalSlot);
 
     return 'ready';
   });
@@ -194,8 +197,31 @@ export async function submitTerminalOneAnswer(
       await tx.update(puzzleAssignments)
         .set({ retiredAt: new Date() })
         .where(eq(puzzleAssignments.id, assignmentId));
+      return 'correct';
     }
 
-    return correct ? 'correct' : 'incorrect';
+    const now = new Date();
+    const alarmUntil = new Date(now.getTime() + 15_000);
+    await tx.update(heistRuns)
+      .set({ puzzleAlarmUntil: sql`greatest(${heistRuns.puzzleAlarmUntil}, ${alarmUntil.toISOString()}::timestamptz)` })
+      .where(eq(heistRuns.id, runId));
+
+    const [attempts] = await tx.select({ misses: count() })
+      .from(puzzleSubmissions)
+      .where(and(
+        eq(puzzleSubmissions.assignmentId, assignmentId),
+        eq(puzzleSubmissions.correct, false),
+      ));
+
+    if (attempts.misses >= 2) {
+      await tx.update(puzzleAssignments)
+        .set({ retiredAt: now })
+        .where(eq(puzzleAssignments.id, assignmentId));
+      await tx.update(runTerminals)
+        .set({ status: 'cooldown', cooldownUntil: new Date(now.getTime() + 10_000) })
+        .where(and(eq(runTerminals.runId, runId), eq(runTerminals.slot, 1)));
+    }
+
+    return 'incorrect';
   });
 }

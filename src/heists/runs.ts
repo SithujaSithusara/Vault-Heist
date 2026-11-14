@@ -1,7 +1,7 @@
 import 'server-only';
-import { and, eq, exists, gt, inArray, isNull } from 'drizzle-orm';
+import { and, count, eq, exists, gt, inArray, isNull, sql } from 'drizzle-orm';
 import { db } from '@/src/db';
-import { appSessions, heistRuns, players, runTerminals } from '@/src/db/schema';
+import { appSessions, heistRuns, players, puzzleAssignments, puzzleSubmissions, runTerminals } from '@/src/db/schema';
 import { revokeSession } from '../auth/sessions';
 
 type RunOwner = {
@@ -165,11 +165,27 @@ export async function getActiveHeist(owner: RunOwner, runId: string) {
   const [run] = await db.select({
     startedAt: heistRuns.startedAt,
     solvedDigit: runTerminals.solvedDigit,
+    cooldownUntil: runTerminals.cooldownUntil,
+    assignmentId: puzzleAssignments.id,
+    puzzleAlarmUntil: heistRuns.puzzleAlarmUntil,
+    wrongAnswers: sql<number>`(${db.select({ total: count() })
+      .from(puzzleSubmissions)
+      .innerJoin(puzzleAssignments, eq(puzzleSubmissions.assignmentId, puzzleAssignments.id))
+      .where(and(
+        eq(puzzleAssignments.runId, heistRuns.id),
+        eq(puzzleSubmissions.correct, false),
+      ))
+      })`.mapWith(Number),
   })
     .from(heistRuns)
     .leftJoin(runTerminals, and(
       eq(runTerminals.runId, heistRuns.id),
       eq(runTerminals.slot, 1),
+    ))
+    .leftJoin(puzzleAssignments, and(
+      eq(puzzleAssignments.runId, heistRuns.id),
+      eq(puzzleAssignments.slot, 1),
+      isNull(puzzleAssignments.retiredAt),
     ))
     .where(and(
       eq(heistRuns.id, runId),
@@ -178,7 +194,7 @@ export async function getActiveHeist(owner: RunOwner, runId: string) {
       eq(heistRuns.status, 'active'),
     ));
 
-  return run?.startedAt ? { startedAt: run.startedAt, solvedDigit: run.solvedDigit } : null;
+  return run?.startedAt ? { ...run, startedAt: run.startedAt } : null;
 }
 
 export async function abandonActiveHeist(owner: RunOwner, runId: string) {
