@@ -1,5 +1,5 @@
 import 'server-only';
-import { and, eq, gt, inArray, isNull } from 'drizzle-orm';
+import { and, eq, exists, gt, inArray, isNull } from 'drizzle-orm';
 import { db } from '@/src/db';
 import { appSessions, heistRuns, players, runTerminals } from '@/src/db/schema';
 import { revokeSession } from '../auth/sessions';
@@ -137,6 +137,13 @@ export async function startHeist(owner: RunOwner, runId:string){
         eq(heistRuns.sessionId, owner.sessionId),
         eq(heistRuns.status, 'preparing'),
         isNull(heistRuns.startedAt),
+        exists(tx.select({ slot: runTerminals.slot })
+          .from(runTerminals)
+          .where(and(
+            eq(runTerminals.runId, heistRuns.id),
+            eq(runTerminals.slot, 1),
+            eq(runTerminals.status, 'ready'),
+          ))),
       ))
       .returning({ id: heistRuns.id });
 
@@ -155,8 +162,15 @@ export async function startHeist(owner: RunOwner, runId:string){
 }
 
 export async function getActiveHeist(owner: RunOwner, runId: string) {
-  const [run] = await db.select({ startedAt: heistRuns.startedAt })
+  const [run] = await db.select({
+    startedAt: heistRuns.startedAt,
+    solvedDigit: runTerminals.solvedDigit,
+  })
     .from(heistRuns)
+    .leftJoin(runTerminals, and(
+      eq(runTerminals.runId, heistRuns.id),
+      eq(runTerminals.slot, 1),
+    ))
     .where(and(
       eq(heistRuns.id, runId),
       eq(heistRuns.playerId, owner.playerId),
@@ -164,7 +178,7 @@ export async function getActiveHeist(owner: RunOwner, runId: string) {
       eq(heistRuns.status, 'active'),
     ));
 
-  return run?.startedAt ? { startedAt: run.startedAt } : null;
+  return run?.startedAt ? { startedAt: run.startedAt, solvedDigit: run.solvedDigit } : null;
 }
 
 export async function abandonActiveHeist(owner: RunOwner, runId: string) {
