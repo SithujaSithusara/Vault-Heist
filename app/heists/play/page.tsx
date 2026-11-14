@@ -4,8 +4,8 @@ import { redirect } from 'next/navigation';
 import { Button } from '@/components/ui/button';
 import { getCurrentSession } from '@/src/auth/sessions';
 import { abandonActiveHeist, getActiveHeist } from '@/src/heists/runs';
-import { HeistTimer } from '@/components/heists/heistTimer';
-import { getTerminalOneAssignment, submitTerminalOneAnswer } from '@/src/puzzles/assignment';
+import { CheckDigitButton, HeistTimer, ReplacementButton } from '@/components/heists/heistTimer';
+import { replaceTerminalOne, submitTerminalOneAnswer } from '@/src/puzzles/assignment';
 
 type PlayPageProps = {
   searchParams: Promise<{ run?: string | string[]; answer?: string | string[] }>;
@@ -32,9 +32,8 @@ export default async function PlayPage({ searchParams }: PlayPageProps) {
     redirect('/lobby');
   }
 
-  const assignment = await getTerminalOneAssignment(session, run);
   const requestId = randomUUID();
-  const assignmentId = assignment?.id;
+  const { assignmentId } = activeRun;
   const runPath = `/heists/play?run=${run}`;
 
   async function submitAnswer(formData: FormData) {
@@ -57,7 +56,21 @@ export default async function PlayPage({ searchParams }: PlayPageProps) {
     redirect(`${runPath}&answer=${result}`);
   }
 
-  const initialElapsedMs = Math.max(0, Date.now() - activeRun.startedAt.getTime());
+  async function loadReplacement() {
+    'use server';
+
+    const currentSession = await getCurrentSession();
+    if (!currentSession) redirect('/');
+
+    const result = await replaceTerminalOne(currentSession, run as string);
+    if (result === 'ready') redirect(runPath);
+    redirect(`${runPath}&answer=${result}`);
+  }
+
+  const now = Date.now();
+  const initialElapsedMs = Math.max(0, now - activeRun.startedAt.getTime());
+  const alarmRemainingMs = Math.max(0, (activeRun.puzzleAlarmUntil?.getTime() ?? 0) - now);
+  const cooldownRemainingMs = Math.max(0, (activeRun.cooldownUntil?.getTime() ?? 0) - now);
 
   return (
     <main className="grid min-h-svh place-items-center bg-heist-bg px-6 py-12 font-heist-body text-heist-cream">
@@ -65,12 +78,14 @@ export default async function PlayPage({ searchParams }: PlayPageProps) {
         <h1 className="font-heist-display text-4xl font-semibold">
           The Banana Reserve
         </h1>
-        <p className="mt-3 text-heist-muted">
-          Run started at{' '}
-        </p>
-        <HeistTimer key={`${run}:${initialElapsedMs}`} initialElapsedMs={initialElapsedMs} />
+        <HeistTimer
+          key={`${run}:${initialElapsedMs}`}
+          initialElapsedMs={initialElapsedMs}
+          penaltySeconds={activeRun.wrongAnswers * 10}
+          alarmRemainingMs={alarmRemainingMs}
+        />
 
-        {(assignment || activeRun.solvedDigit !== null) && (
+        {(assignmentId || activeRun.solvedDigit !== null || activeRun.cooldownUntil) && (
           <section aria-labelledby="terminal-one" className="mt-6">
             <h2 id="terminal-one" className="font-heist-display text-2xl font-semibold">
               Terminal 1
@@ -79,10 +94,19 @@ export default async function PlayPage({ searchParams }: PlayPageProps) {
               <p className="mt-3 text-heist-mint">
                 Terminal solved. Vault code digit 1: <strong>{activeRun.solvedDigit}</strong>
               </p>
-            ) : assignment && (
+            ) : activeRun.cooldownUntil ? (
+              <form action={loadReplacement} className="mt-4">
+                <ReplacementButton key={`${run}:${initialElapsedMs}`} initialCooldownMs={cooldownRemainingMs} />
+                {answer === 'puzzle-unavailable' && (
+                  <p role="alert" className="mt-3 text-heist-yellow">
+                    Could not load a replacement puzzle. Try again.
+                  </p>
+                )}
+              </form>
+            ) : assignmentId && (
               <>
                 <Image
-                  src={`/api/heists/puzzles/${assignment.id}/image`}
+                  src={`/api/heists/puzzles/${assignmentId}/image`}
                   alt="Banana number puzzle for Terminal 1"
                   width={600}
                   height={400}
@@ -103,17 +127,12 @@ export default async function PlayPage({ searchParams }: PlayPageProps) {
                       required
                       className="h-11 w-16 rounded-lg border border-heist-edge bg-heist-bg text-center font-heist-mono focus-visible:outline-2 focus-visible:outline-heist-mint"
                     />
-                    <Button
-                      type="submit"
-                      className="h-11 cursor-pointer bg-heist-yellow font-bold text-heist-ink hover:bg-heist-yellow/90"
-                    >
-                      Check digit
-                    </Button>
+                    <CheckDigitButton />
                   </div>
                 </form>
 
                 {answer === 'incorrect' && (
-                  <p role="alert" className="mt-3 text-heist-red">Incorrect digit. Try again.</p>
+                  <p role="alert" className="mt-3 text-heist-red">Incorrect digit. +10 seconds.</p>
                 )}
                 {answer === 'invalid' && (
                   <p role="alert" className="mt-3 text-heist-red">Enter one digit from 0 to 9.</p>
