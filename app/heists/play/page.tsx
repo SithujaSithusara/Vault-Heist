@@ -1,11 +1,14 @@
+import { randomUUID } from 'node:crypto';
+import Image from 'next/image';
 import { redirect } from 'next/navigation';
 import { Button } from '@/components/ui/button';
 import { getCurrentSession } from '@/src/auth/sessions';
 import { abandonActiveHeist, getActiveHeist } from '@/src/heists/runs';
 import { HeistTimer } from '@/components/heists/heistTimer';
+import { getTerminalOneAssignment, submitTerminalOneAnswer } from '@/src/puzzles/assignment';
 
 type PlayPageProps = {
-  searchParams: Promise<{ run?: string | string[] }>;
+  searchParams: Promise<{ run?: string | string[]; answer?: string | string[] }>;
 };
 
 const uuidPattern = /^[0-9a-f]{8}(?:-[0-9a-f]{4}){3}-[0-9a-f]{12}$/i;
@@ -14,7 +17,7 @@ export default async function PlayPage({ searchParams }: PlayPageProps) {
   const session = await getCurrentSession();
   if (!session) redirect('/');
 
-  const { run } = await searchParams;
+  const { run, answer } = await searchParams;
   if (typeof run !== 'string' || !uuidPattern.test(run)) redirect('/lobby');
 
   const activeRun = await getActiveHeist(session, run);
@@ -27,6 +30,31 @@ export default async function PlayPage({ searchParams }: PlayPageProps) {
 
     await abandonActiveHeist(currentSession, run as string);
     redirect('/lobby');
+  }
+
+  const assignment = await getTerminalOneAssignment(session, run);
+  const requestId = randomUUID();
+  const assignmentId = assignment?.id;
+  const runPath = `/heists/play?run=${run}`;
+
+  async function submitAnswer(formData: FormData) {
+    'use server';
+
+    const currentSession = await getCurrentSession();
+    if (!currentSession) redirect('/');
+    if (!assignmentId) redirect(runPath);
+
+    const answer = formData.get('digit');
+    if (typeof answer !== 'string' || !/^[0-9]$/.test(answer)) {
+      redirect(`${runPath}&answer=invalid`);
+    }
+
+    const result = await submitTerminalOneAnswer(
+      currentSession, run as string, assignmentId, requestId, Number(answer),
+    );
+    if (result === 'signed-out') redirect('/');
+    if (result === 'correct') redirect(runPath);
+    redirect(`${runPath}&answer=${result}`);
   }
 
   const initialElapsedMs = Math.max(0, Date.now() - activeRun.startedAt.getTime());
@@ -42,6 +70,61 @@ export default async function PlayPage({ searchParams }: PlayPageProps) {
         </p>
         <HeistTimer key={`${run}:${initialElapsedMs}`} initialElapsedMs={initialElapsedMs} />
 
+        {(assignment || activeRun.solvedDigit !== null) && (
+          <section aria-labelledby="terminal-one" className="mt-6">
+            <h2 id="terminal-one" className="font-heist-display text-2xl font-semibold">
+              Terminal 1
+            </h2>
+            {activeRun.solvedDigit !== null ? (
+              <p className="mt-3 text-heist-mint">
+                Terminal solved. Vault code digit 1: <strong>{activeRun.solvedDigit}</strong>
+              </p>
+            ) : assignment && (
+              <>
+                <Image
+                  src={`/api/heists/puzzles/${assignment.id}/image`}
+                  alt="Banana number puzzle for Terminal 1"
+                  width={600}
+                  height={400}
+                  unoptimized
+                  className="mt-3 h-auto max-w-full rounded-xl"
+                />
+                <form action={submitAnswer} className="mt-4">
+                  <label htmlFor="terminal-one-digit" className="block font-bold">
+                    Missing digit
+                  </label>
+                  <div className="mt-2 flex flex-wrap items-center gap-3">
+                    <input
+                      id="terminal-one-digit"
+                      name="digit"
+                      inputMode="numeric"
+                      pattern="[0-9]"
+                      maxLength={1}
+                      required
+                      className="h-11 w-16 rounded-lg border border-heist-edge bg-heist-bg text-center font-heist-mono focus-visible:outline-2 focus-visible:outline-heist-mint"
+                    />
+                    <Button
+                      type="submit"
+                      className="h-11 cursor-pointer bg-heist-yellow font-bold text-heist-ink hover:bg-heist-yellow/90"
+                    >
+                      Check digit
+                    </Button>
+                  </div>
+                </form>
+
+                {answer === 'incorrect' && (
+                  <p role="alert" className="mt-3 text-heist-red">Incorrect digit. Try again.</p>
+                )}
+                {answer === 'invalid' && (
+                  <p role="alert" className="mt-3 text-heist-red">Enter one digit from 0 to 9.</p>
+                )}
+                {answer === 'unavailable' && (
+                  <p role="alert" className="mt-3 text-heist-yellow">This submission is no longer available.</p>
+                )}
+              </>
+            )}
+          </section>
+        )}
         <form action={abandon} className="mt-6">
           <Button type="submit" variant="outline" className="cursor-pointer">
             Abandon run

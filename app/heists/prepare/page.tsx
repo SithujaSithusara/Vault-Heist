@@ -3,9 +3,10 @@ import { PortalHeader } from '@/components/portal/portalHeader';
 import { Button } from '@/components/ui/button';
 import { getCurrentSession } from '@/src/auth/sessions';
 import { cancelPreparation, getPreparingHeist, startHeist } from '@/src/heists/runs';
+import { prepareTerminalOne } from '@/src/puzzles/assignment';
 
 type PreparePageProps = {
-  searchParams: Promise<{ run?: string | string[] }>;
+  searchParams: Promise<{ run?: string | string[]; puzzle?: string | string[] }>;
 };
 
 const uuidPattern = /^[0-9a-f]{8}(?:-[0-9a-f]{4}){3}-[0-9a-f]{12}$/i;
@@ -14,7 +15,7 @@ export default async function PreparePage({ searchParams }: PreparePageProps) {
   const session = await getCurrentSession();
   if (!session) redirect('/');
 
-  const { run } = await searchParams;
+  const { run, puzzle } = await searchParams;
   if (typeof run !== 'string' || !uuidPattern.test(run)) redirect('/lobby');
 
   const slots = await getPreparingHeist(session, run);
@@ -34,6 +35,11 @@ export default async function PreparePage({ searchParams }: PreparePageProps) {
     'use server';
     const currentSession = await getCurrentSession();
     if (!currentSession) redirect('/');
+
+    const readiness = await prepareTerminalOne(currentSession, run as string);
+    if (readiness === 'puzzle-unavailable') {
+      redirect(`/heists/prepare?run=${run}&puzzle=unavailable`);
+    }
 
     const outcome = await startHeist(currentSession, run as string);
 
@@ -57,10 +63,15 @@ export default async function PreparePage({ searchParams }: PreparePageProps) {
           <ol className="mt-6 space-y-2">
             {slots.map(({ slot }) => (
               <li key={slot} className="rounded-xl border border-heist-edge px-4 py-3">
-                Level {slot}
+                Terminal {slot}
               </li>
             ))}
           </ol>
+          {puzzle === 'unavailable' && (
+            <p role="alert" className="mt-4 text-heist-yellow">
+              Could not load the Terminal 1 puzzle. Select Enter Vault to try again.
+            </p>
+          )}
           <form action={enterVault} className="mt-6">
             <Button
               type="submit"
