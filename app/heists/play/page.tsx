@@ -4,7 +4,7 @@ import Link from 'next/link';
 import { redirect } from 'next/navigation';
 import { Button } from '@/components/ui/button';
 import { getCurrentSession } from '@/src/auth/sessions';
-import { abandonActiveHeist, getActiveHeist } from '@/src/heists/runs';
+import { abandonActiveHeist, chooseMaintenanceRoute, getActiveHeist } from '@/src/heists/runs';
 import { CheckDigitButton, HeistTimer, ReplacementButton } from '@/components/heists/heistTimer';
 import { replaceTerminalPuzzle, submitTerminalAnswer } from '@/src/puzzles/assignment';
 
@@ -37,7 +37,7 @@ export default async function PlayPage({ searchParams }: PlayPageProps) {
   const selected = activeRun.terminals.find(({ slot }) => String(slot) === terminal)
     ?? activeRun.terminals.find(({ solvedDigit }) => solvedDigit === null)
     ?? activeRun.terminals[0];
-  const { assignmentId, slot, solvedDigit, cooldownUntil } = selected;
+  const { assignmentId, slot, solvedDigit, cooldownUntil, terminalStatus } = selected;
   const playPath = `/heists/play?run=${run}`;
   const runPath = `${playPath}&terminal=${slot}`;
 
@@ -72,6 +72,19 @@ export default async function PlayPage({ searchParams }: PlayPageProps) {
     redirect(`${runPath}&answer=${result}`);
   }
 
+  const fallback = activeRun.route === 'fallback';
+  const jammed = activeRun.terminals.some((entry) => entry.terminalStatus === 'jammed');
+
+  async function takeMaintenanceRoute() {
+    'use server';
+    const currentSession = await getCurrentSession();
+    if (!currentSession) redirect('/');
+
+    const result = await chooseMaintenanceRoute(currentSession, run as string);
+    if (result === 'signed-out') redirect('/');
+    redirect(runPath);
+  }
+
   const now = activeRun.observedAtMs;
   const initialElapsedMs = Math.max(0, now - activeRun.startedAt.getTime());
   const alarmRemainingMs = Math.max(0, (activeRun.puzzleAlarmUntil?.getTime() ?? 0) - now);
@@ -90,6 +103,24 @@ export default async function PlayPage({ searchParams }: PlayPageProps) {
           alarmRemainingMs={alarmRemainingMs}
         />
 
+        {fallback && (
+          <p className="mt-5 rounded-lg border border-heist-yellow px-3 py-2 font-bold text-heist-yellow">
+            Maintenance route — not ranked.
+          </p>
+        )}
+        {jammed && !fallback && (
+          <details className="mt-5 rounded-lg border border-heist-yellow px-3 py-2">
+            <summary className="cursor-pointer font-bold text-heist-yellow">A terminal is jammed</summary>
+            <p className="mt-2 text-heist-muted">
+              Take the maintenance route to continue unranked, or keep solving available terminals.
+            </p>
+            <form action={takeMaintenanceRoute} className="mt-3">
+              <Button type="submit" variant="outline" className="enabled:cursor-pointer">
+                Take maintenance route
+              </Button>
+            </form>
+          </details>
+        )}
         <nav aria-label="Terminals" className="mt-6 flex flex-wrap gap-2">
           {activeRun.terminals.map((entry) => (
             <Link
@@ -113,7 +144,7 @@ export default async function PlayPage({ searchParams }: PlayPageProps) {
             </p>
           ) : !assignmentId ? (
             <form action={loadReplacement} className="mt-4">
-              <ReplacementButton key={`${run}:${initialElapsedMs}`} initialCooldownMs={cooldownRemainingMs} label={cooldownUntil ? 'Load replacement puzzle' : 'Load puzzle'} />
+              <ReplacementButton key={`${run}:${initialElapsedMs}`} initialCooldownMs={cooldownRemainingMs} label={terminalStatus === 'jammed' ? 'Retry puzzle' : cooldownUntil ? 'Load replacement puzzle' : 'Load puzzle'} />
               {answer === 'puzzle-unavailable' && (
                 <p role="alert" className="mt-3 text-heist-yellow">
                   Could not load a puzzle for this terminal. Try again.

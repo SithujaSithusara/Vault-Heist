@@ -1,5 +1,5 @@
 import 'server-only';
-import { and, count, eq, gt, inArray, isNull, sql } from 'drizzle-orm';
+import { and, count, eq, exists, gt, inArray, isNull, or, sql } from 'drizzle-orm';
 import { db } from '@/src/db';
 import { appSessions, heistRuns, players, puzzleAssignments, puzzleSubmissions, runTerminals } from '@/src/db/schema';
 import { revokeSession } from '../auth/sessions';
@@ -90,6 +90,8 @@ export async function prepareHeist(owner: RunOwner) {
 export async function getPreparingHeist(owner: RunOwner, runId: string) {
   const rows = await db.select({
       slot: runTerminals.slot,
+      status: runTerminals.status,
+      route: heistRuns.route,
       ready: sql<boolean>`${runTerminals.status} = 'ready' AND ${puzzleAssignments.id} IS NOT NULL`,
     })
     .from(heistRuns)
@@ -121,6 +123,51 @@ export async function cancelPreparation(owner: RunOwner, runId: string) {
     ));
 }
 
+export async function chooseMaintenanceRoute(owner: RunOwner, runId: string) {
+  return db.transaction(async (tx) => {
+    const [session] = await tx.select({
+      expiresAt: appSessions.expiresAt,
+      revokedAt: appSessions.revokedAt,
+    })
+      .from(appSessions)
+      .where(and(
+        eq(appSessions.id, owner.sessionId),
+        eq(appSessions.playerId, owner.playerId),
+      ))
+      .for('update');
+
+    const now = new Date();
+    if (!session || session.revokedAt || session.expiresAt <= now) return 'signed-out';
+
+    const ownedRun = and(
+      eq(heistRuns.id, runId),
+      eq(heistRuns.playerId, owner.playerId),
+      eq(heistRuns.sessionId, owner.sessionId),
+      inArray(heistRuns.status, openStatuses),
+    );
+    const [chosen] = await tx.update(heistRuns)
+      .set({ route: 'fallback', fallbackChosenAt: now })
+      .where(and(
+        ownedRun,
+        eq(heistRuns.route, 'standard'),
+        exists(tx.select({ slot: runTerminals.slot })
+          .from(runTerminals)
+          .where(and(
+            eq(runTerminals.runId, heistRuns.id),
+            eq(runTerminals.status, 'jammed'),
+          ))),
+      ))
+      .returning({ id: heistRuns.id });
+
+    if (chosen) return 'fallback';
+
+    const [existing] = await tx.select({ route: heistRuns.route })
+      .from(heistRuns)
+      .where(ownedRun);
+    return existing?.route === 'fallback' ? 'fallback' : 'unavailable';
+  });
+}
+
 export async function startHeist(owner: RunOwner, runId:string){
     return db.transaction(async(tx)=> {
         const [session] = await tx.select ({
@@ -145,17 +192,20 @@ export async function startHeist(owner: RunOwner, runId:string){
         eq(heistRuns.sessionId, owner.sessionId),
         eq(heistRuns.status, 'preparing'),
         isNull(heistRuns.startedAt),
-        eq(sql<number>`(${tx.select({ total: count() })
-          .from(runTerminals)
-          .innerJoin(puzzleAssignments, and(
-            eq(puzzleAssignments.runId, runTerminals.runId),
-            eq(puzzleAssignments.slot, runTerminals.slot),
-            isNull(puzzleAssignments.retiredAt),
-          ))
-          .where(and(
-            eq(runTerminals.runId, heistRuns.id),
-            eq(runTerminals.status, 'ready'),
-          ))})`, terminalSlots.length),
+        or(
+          eq(heistRuns.route, 'fallback'),
+          eq(sql<number>`(${tx.select({ total: count() })
+            .from(runTerminals)
+            .innerJoin(puzzleAssignments, and(
+              eq(puzzleAssignments.runId, runTerminals.runId),
+              eq(puzzleAssignments.slot, runTerminals.slot),
+              isNull(puzzleAssignments.retiredAt),
+            ))
+            .where(and(
+              eq(runTerminals.runId, heistRuns.id),
+              eq(runTerminals.status, 'ready'),
+            ))})`, terminalSlots.length),
+        ),
       ))
       .returning({ id: heistRuns.id });
 
@@ -177,6 +227,8 @@ export async function getActiveHeist(owner: RunOwner, runId: string) {
   const rows = await db.select({
     startedAt: heistRuns.startedAt,
     slot: runTerminals.slot,
+    terminalStatus: runTerminals.status,
+    route: heistRuns.route,
     solvedDigit: runTerminals.solvedDigit,
     cooldownUntil: runTerminals.cooldownUntil,
     assignmentId: puzzleAssignments.id,
@@ -209,11 +261,12 @@ export async function getActiveHeist(owner: RunOwner, runId: string) {
   if (!run?.startedAt) return null;
   return {
     startedAt: run.startedAt,
+    route: run.route,
     observedAtMs: Date.now(),
     puzzleAlarmUntil: run.puzzleAlarmUntil,
     wrongAnswers: run.wrongAnswers,
-    terminals: rows.map(({ slot, solvedDigit, cooldownUntil, assignmentId }) => ({
-      slot, solvedDigit, cooldownUntil, assignmentId,
+    terminals: rows.map(({ slot, terminalStatus, solvedDigit, cooldownUntil, assignmentId }) => ({
+      slot, terminalStatus, solvedDigit, cooldownUntil, assignmentId,
     })),
   };
 }

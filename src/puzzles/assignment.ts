@@ -50,7 +50,7 @@ async function assignTerminalPuzzle(
   if (!terminal) return 'unavailable';
   if (terminal.status === 'ready') return 'ready';
   const expectedStatus = terminal.status;
-  if (expectedStatus !== 'waiting' &&
+  if (expectedStatus !== 'waiting' && expectedStatus !== 'jammed' &&
       (expectedStatus !== 'cooldown' || runStatus !== 'active')) {
     return 'unavailable';
   }
@@ -59,11 +59,11 @@ async function assignTerminalPuzzle(
     return 'cooldown';
   }
 
-  let puzzle: Awaited<ReturnType<typeof fetchBananaPuzzle>>;
+  let puzzle: Awaited<ReturnType<typeof fetchBananaPuzzle>> | null;
   try {
     puzzle = await fetchBananaPuzzle();
   } catch {
-    return 'puzzle-unavailable';
+    puzzle = null;
   }
 
   return db.transaction(async (tx) => {
@@ -97,6 +97,13 @@ async function assignTerminalPuzzle(
     if (current?.status !== expectedStatus ||
         current.cooldownUntil?.getTime() !== cooldownEnd) {
       return 'unavailable';
+    }
+
+    if (!puzzle) {
+      await tx.update(runTerminals)
+        .set({ status: 'jammed', cooldownUntil: null })
+        .where(terminalSlot);
+      return 'puzzle-unavailable';
     }
 
     await tx.insert(puzzleAssignments).values({ runId, slot, ...puzzle });

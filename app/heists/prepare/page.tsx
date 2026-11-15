@@ -2,7 +2,7 @@ import { redirect } from 'next/navigation';
 import { PortalHeader } from '@/components/portal/portalHeader';
 import { Button } from '@/components/ui/button';
 import { getCurrentSession } from '@/src/auth/sessions';
-import { cancelPreparation, getPreparingHeist, startHeist } from '@/src/heists/runs';
+import { cancelPreparation, chooseMaintenanceRoute, getPreparingHeist, startHeist } from '@/src/heists/runs';
 import { prepareTerminalPuzzles } from '@/src/puzzles/assignment';
 
 type PreparePageProps = {
@@ -32,6 +32,24 @@ export default async function PreparePage({ searchParams }: PreparePageProps) {
   }
 
   const ready = slots.every((slot) => slot.ready);
+  const fallback = slots[0].route === 'fallback';
+  const jammed = slots.some(({ status }) => status === 'jammed');
+
+  async function playMaintenanceRoute() {
+    'use server';
+    const currentSession = await getCurrentSession();
+    if (!currentSession) redirect('/');
+
+    const outcome = await chooseMaintenanceRoute(currentSession, run as string);
+    if (outcome === 'signed-out') redirect('/');
+    if (outcome === 'fallback') {
+      const started = await startHeist(currentSession, run as string);
+      if (started === 'signed-out') redirect('/');
+      if (started === 'active') redirect(`/heists/play?run=${run}`);
+    }
+
+    redirect(`/heists/prepare?run=${run}`);
+  }
 
   async function loadPuzzles() {
     'use server';
@@ -67,25 +85,36 @@ export default async function PreparePage({ searchParams }: PreparePageProps) {
             The timer starts when you enter the vault.
           </p>
           <ol className="mt-6 space-y-2">
-            {slots.map(({ slot, ready: terminalReady }) => (
+            {slots.map(({ slot, ready: terminalReady, status }) => (
               <li key={slot} className="rounded-xl border border-heist-edge px-4 py-3">
-                Terminal {slot} · {terminalReady ? 'Ready' : 'Waiting for puzzle'}
+                Terminal {slot} · {terminalReady ? 'Ready' : status === 'jammed' ? 'Jammed' : 'Waiting for puzzle'}
               </li>
             ))}
           </ol>
-          {!ready && puzzle === 'unavailable' && (
+          {fallback && (
+            <p className="mt-4 font-bold text-heist-yellow">Maintenance route — not ranked.</p>
+          )}
+          {!fallback && !ready && puzzle === 'unavailable' && (
             <p role="alert" className="mt-4 text-heist-yellow">
               Some puzzles could not be loaded. Try loading puzzles again.
             </p>
           )}
-          <form action={ready ? enterVault : loadPuzzles} className="mt-6">
+          <form action={ready || fallback ? enterVault : loadPuzzles} className="mt-6">
             <Button
               type="submit"
               className="h-14 cursor-pointer rounded-xl border-[3px] border-heist-ink bg-heist-yellow px-6 font-extrabold text-heist-ink shadow-heist-button hover:bg-heist-yellow/90"
             >
-              {ready ? 'Enter Vault' : 'Load puzzles'}
+              {ready || fallback ? 'Enter Vault' : 'Load puzzles'}
             </Button>
           </form>
+          {jammed && !fallback && (
+            <form action={playMaintenanceRoute} className="mt-6">
+              <p className="mb-3 text-heist-muted">Maintenance completions are unranked.</p>
+              <Button type="submit" variant="outline" className="enabled:cursor-pointer">
+                Play Maintenance Route
+              </Button>
+            </form>
+          )}
           <form action={cancel} className="mt-6">
             <Button type="submit" variant="outline" className="cursor-pointer">
               Cancel and return to lobby
