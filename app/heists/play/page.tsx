@@ -1,6 +1,6 @@
 import { randomUUID } from 'node:crypto';
 import Image from 'next/image';
-import Link from 'next/link';
+import { HeistFloor } from '@/components/heists/heistFloor';
 import { redirect } from 'next/navigation';
 import { Button } from '@/components/ui/button';
 import { getCurrentSession } from '@/src/auth/sessions';
@@ -92,7 +92,7 @@ export default async function PlayPage({ searchParams }: PlayPageProps) {
 
   return (
     <main className="grid min-h-svh place-items-center bg-heist-bg px-6 py-12 font-heist-body text-heist-cream">
-      <section className="w-full max-w-2xl rounded-3xl border-[3px] border-heist-ink bg-heist-panel p-6 sm:p-8">
+      <section className="w-full max-w-7xl rounded-3xl border-[3px] border-heist-ink bg-heist-panel p-6 sm:p-8">
         <h1 className="font-heist-display text-4xl font-semibold">
           The Banana Reserve
         </h1>
@@ -121,76 +121,73 @@ export default async function PlayPage({ searchParams }: PlayPageProps) {
             </form>
           </details>
         )}
-        <nav aria-label="Terminals" className="mt-6 flex flex-wrap gap-2">
-          {activeRun.terminals.map((entry) => (
-            <Link
-              key={entry.slot}
-              href={`${playPath}&terminal=${entry.slot}`}
-              aria-current={entry.slot === slot ? 'page' : undefined}
-              className="cursor-pointer rounded-lg border border-heist-edge px-3 py-2 text-sm font-bold hover:border-heist-mint aria-[current=page]:border-heist-yellow"
-            >
-              Terminal {entry.slot} · {entry.solvedDigit ?? '—'}
-            </Link>
-          ))}
-        </nav>
-
-        <section aria-labelledby="terminal-title" className="mt-6">
-          <h2 id="terminal-title" className="font-heist-display text-2xl font-semibold">
-            Terminal {slot}
-          </h2>
-          {solvedDigit !== null ? (
-            <p className="mt-3 text-heist-mint">
-              Terminal solved. Vault code digit {slot}: <strong>{solvedDigit}</strong>
-            </p>
-          ) : !assignmentId ? (
-            <form action={loadReplacement} className="mt-4">
-              <ReplacementButton key={`${run}:${initialElapsedMs}`} initialCooldownMs={cooldownRemainingMs} label={terminalStatus === 'jammed' ? 'Retry puzzle' : cooldownUntil ? 'Load replacement puzzle' : 'Load puzzle'} />
-              {answer === 'puzzle-unavailable' && (
-                <p role="alert" className="mt-3 text-heist-yellow">
-                  Could not load a puzzle for this terminal. Try again.
-                </p>
-              )}
-            </form>
-          ) : (
-            <>
-              <Image
-                src={`/api/heists/puzzles/${assignmentId}/image`}
-                alt={`Banana number puzzle for Terminal ${slot}`}
-                width={600}
-                height={400}
-                unoptimized
-                className="mt-3 h-auto max-w-full rounded-xl"
-              />
-              <form action={submitAnswer} className="mt-4">
-                <label htmlFor="terminal-digit" className="block font-bold">
-                  Missing digit
-                </label>
-                <div className="mt-2 flex flex-wrap items-center gap-3">
-                  <input
-                    id="terminal-digit"
-                    name="digit"
-                    inputMode="numeric"
-                    pattern="[0-9]"
-                    maxLength={1}
-                    required
-                    className="h-11 w-16 rounded-lg border border-heist-edge bg-heist-bg text-center font-heist-mono focus-visible:outline-2 focus-visible:outline-heist-mint"
-                  />
-                  <CheckDigitButton />
-                </div>
+        <HeistFloor
+          key={run}
+          playPath={playPath}
+          selectedSlot={slot}
+          solvedSlots={activeRun.terminals.filter((entry) => entry.solvedDigit !== null).map((entry) => entry.slot)}
+          fallback={fallback}
+          startedAtMs={activeRun.startedAt.getTime()}
+          puzzleAlarmUntilMs={activeRun.puzzleAlarmUntil?.getTime() ?? null}
+        >
+          <section aria-labelledby="terminal-title" className="mt-6">
+            <h2 id="terminal-title" className="font-heist-display text-2xl font-semibold">
+              Terminal {slot}
+            </h2>
+            {solvedDigit !== null ? (
+              <p className="mt-3 text-heist-mint">
+                Terminal solved. Vault code digit {slot}: <strong>{solvedDigit}</strong>
+              </p>
+            ) : !assignmentId ? (
+              <form action={loadReplacement} className="mt-4">
+                <ReplacementButton key={`${run}:${initialElapsedMs}`} initialCooldownMs={cooldownRemainingMs} label={terminalStatus === 'jammed' ? 'Retry puzzle' : cooldownUntil ? 'Load replacement puzzle' : 'Load puzzle'} />
+                {answer === 'puzzle-unavailable' && (
+                  <p role="alert" className="mt-3 text-heist-yellow">
+                    Could not load a puzzle for this terminal. Try again.
+                  </p>
+                )}
               </form>
+            ) : (
+              <>
+                <Image
+                  src={`/api/heists/puzzles/${assignmentId}/image`}
+                  alt={`Banana number puzzle for Terminal ${slot}`}
+                  width={600}
+                  height={400}
+                  unoptimized
+                  className="mt-3 h-auto max-w-full rounded-xl"
+                />
+                <form action={submitAnswer} className="mt-4">
+                  <label htmlFor="terminal-digit" className="block font-bold">
+                    Missing digit
+                  </label>
+                  <div className="mt-2 flex flex-wrap items-center gap-3">
+                    <input
+                      id="terminal-digit"
+                      name="digit"
+                      inputMode="numeric"
+                      pattern="[0-9]"
+                      maxLength={1}
+                      required
+                      className="h-11 w-16 rounded-lg border border-heist-edge bg-heist-bg text-center font-heist-mono focus-visible:outline-2 focus-visible:outline-heist-mint"
+                    />
+                    <CheckDigitButton />
+                  </div>
+                </form>
 
-              {answer === 'incorrect' && (
-                <p role="alert" className="mt-3 text-heist-red">Incorrect digit. +10 seconds.</p>
-              )}
-              {answer === 'invalid' && (
-                <p role="alert" className="mt-3 text-heist-red">Enter one digit from 0 to 9.</p>
-              )}
-              {answer === 'unavailable' && (
-                <p role="alert" className="mt-3 text-heist-yellow">This submission is no longer available.</p>
-              )}
-            </>
-          )}
-        </section>
+                {answer === 'incorrect' && (
+                  <p role="alert" className="mt-3 text-heist-red">Incorrect digit. +10 seconds.</p>
+                )}
+                {answer === 'invalid' && (
+                  <p role="alert" className="mt-3 text-heist-red">Enter one digit from 0 to 9.</p>
+                )}
+                {answer === 'unavailable' && (
+                  <p role="alert" className="mt-3 text-heist-yellow">This submission is no longer available.</p>
+                )}
+              </>
+            )}
+          </section>
+        </HeistFloor>
         <form action={abandon} className="mt-6">
           <Button type="submit" variant="outline" className="cursor-pointer">
             Abandon run
