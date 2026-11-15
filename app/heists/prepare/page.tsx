@@ -3,7 +3,7 @@ import { PortalHeader } from '@/components/portal/portalHeader';
 import { Button } from '@/components/ui/button';
 import { getCurrentSession } from '@/src/auth/sessions';
 import { cancelPreparation, getPreparingHeist, startHeist } from '@/src/heists/runs';
-import { prepareTerminalOne } from '@/src/puzzles/assignment';
+import { prepareTerminalPuzzles } from '@/src/puzzles/assignment';
 
 type PreparePageProps = {
   searchParams: Promise<{ run?: string | string[]; puzzle?: string | string[] }>;
@@ -31,20 +31,26 @@ export default async function PreparePage({ searchParams }: PreparePageProps) {
     redirect('/lobby');
   }
 
+  const ready = slots.every((slot) => slot.ready);
+
+  async function loadPuzzles() {
+    'use server';
+    const currentSession = await getCurrentSession();
+    if (!currentSession) redirect('/');
+
+    const loaded = await prepareTerminalPuzzles(currentSession, run as string);
+    redirect(`/heists/prepare?run=${run}${loaded ? '' : '&puzzle=unavailable'}`);
+  }
+
   async function enterVault() {
     'use server';
     const currentSession = await getCurrentSession();
     if (!currentSession) redirect('/');
 
-    const readiness = await prepareTerminalOne(currentSession, run as string);
-    if (readiness === 'puzzle-unavailable') {
-      redirect(`/heists/prepare?run=${run}&puzzle=unavailable`);
-    }
-
     const outcome = await startHeist(currentSession, run as string);
 
     if (outcome === 'signed-out') redirect('/');
-    if (outcome === 'unavailable') redirect('/lobby');
+    if (outcome === 'unavailable') redirect(`/heists/prepare?run=${run}`);
 
     redirect(`/heists/play?run=${run}`);
   }
@@ -61,23 +67,23 @@ export default async function PreparePage({ searchParams }: PreparePageProps) {
             The timer starts when you enter the vault.
           </p>
           <ol className="mt-6 space-y-2">
-            {slots.map(({ slot }) => (
+            {slots.map(({ slot, ready: terminalReady }) => (
               <li key={slot} className="rounded-xl border border-heist-edge px-4 py-3">
-                Terminal {slot}
+                Terminal {slot} · {terminalReady ? 'Ready' : 'Waiting for puzzle'}
               </li>
             ))}
           </ol>
-          {puzzle === 'unavailable' && (
+          {!ready && puzzle === 'unavailable' && (
             <p role="alert" className="mt-4 text-heist-yellow">
-              Could not load the Terminal 1 puzzle. Select Enter Vault to try again.
+              Some puzzles could not be loaded. Try loading puzzles again.
             </p>
           )}
-          <form action={enterVault} className="mt-6">
+          <form action={ready ? enterVault : loadPuzzles} className="mt-6">
             <Button
               type="submit"
               className="h-14 cursor-pointer rounded-xl border-[3px] border-heist-ink bg-heist-yellow px-6 font-extrabold text-heist-ink shadow-heist-button hover:bg-heist-yellow/90"
             >
-              Enter Vault
+              {ready ? 'Enter Vault' : 'Load puzzles'}
             </Button>
           </form>
           <form action={cancel} className="mt-6">

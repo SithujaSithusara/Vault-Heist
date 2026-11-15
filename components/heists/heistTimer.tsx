@@ -68,7 +68,7 @@ export function CheckDigitButton() {
   );
 }
 
-export function ReplacementButton({ initialCooldownMs }: { initialCooldownMs: number }) {
+export function ReplacementButton({ initialCooldownMs, label }: { initialCooldownMs: number; label: string }) {
   const { pending } = useFormStatus();
   const elapsedMs = useElapsedSinceMount();
   const seconds = Math.max(0, Math.ceil((initialCooldownMs - elapsedMs) / 1000));
@@ -77,7 +77,7 @@ export function ReplacementButton({ initialCooldownMs }: { initialCooldownMs: nu
     <div>
       {seconds > 0 && <p className="mb-3 text-heist-yellow">Terminal cooling down · {seconds}s</p>}
       <Button type="submit" variant="outline" disabled={pending || seconds > 0} className="enabled:cursor-pointer">
-        {pending ? 'Loading puzzle…' : 'Load replacement puzzle'}
+        {pending ? 'Loading puzzle…' : label}
       </Button>
     </div>
   );

@@ -2,6 +2,7 @@ import 'server-only';
 import { and, count, eq, isNull, sql } from 'drizzle-orm';
 import { db } from '@/src/db';
 import { appSessions, heistRuns, puzzleAssignments, puzzleSubmissions, runTerminals } from '@/src/db/schema';
+import { terminalSlots } from '@/src/heists/runs';
 import { fetchBananaPuzzle } from './bananaApi';
 
 type RunOwner = {
@@ -9,17 +10,21 @@ type RunOwner = {
   sessionId: string;
 };
 
-export async function prepareTerminalOne(owner: RunOwner, runId: string) {
-  return assignTerminalOne(owner, runId, 'preparing');
+export async function prepareTerminalPuzzles(owner: RunOwner, runId: string) {
+  const outcomes = await Promise.all(
+    terminalSlots.map((slot) => assignTerminalPuzzle(owner, runId, slot, 'preparing')),
+  );
+  return outcomes.every((outcome) => outcome === 'ready');
 }
 
-export async function replaceTerminalOne(owner: RunOwner, runId: string) {
-  return assignTerminalOne(owner, runId, 'active');
+export async function replaceTerminalPuzzle(owner: RunOwner, runId: string, slot: number) {
+  return assignTerminalPuzzle(owner, runId, slot, 'active');
 }
 
-async function assignTerminalOne(
+async function assignTerminalPuzzle(
   owner: RunOwner,
   runId: string,
+  slot: number,
   runStatus: 'preparing' | 'active',
 ) {
   const ownedRun = and(
@@ -33,21 +38,24 @@ async function assignTerminalOne(
     status: runTerminals.status,
     cooldownUntil: runTerminals.cooldownUntil,
   };
-  const terminalSlot = and(eq(runTerminals.runId, runId), eq(runTerminals.slot, 1));
+  const terminalSlot = and(eq(runTerminals.runId, runId), eq(runTerminals.slot, slot));
   const [terminal] = await db.select(terminalFields)
     .from(heistRuns)
     .innerJoin(runTerminals, and(
       eq(runTerminals.runId, heistRuns.id),
-      eq(runTerminals.slot, 1),
+      eq(runTerminals.slot, slot),
     ))
     .where(ownedRun);
 
   if (!terminal) return 'unavailable';
   if (terminal.status === 'ready') return 'ready';
-  const expectedStatus = runStatus === 'preparing' ? 'waiting' : 'cooldown';
-  if (terminal.status !== expectedStatus) return 'unavailable';
+  const expectedStatus = terminal.status;
+  if (expectedStatus !== 'waiting' &&
+      (expectedStatus !== 'cooldown' || runStatus !== 'active')) {
+    return 'unavailable';
+  }
   const cooldownEnd = terminal.cooldownUntil?.getTime();
-  if (runStatus === 'active' && (cooldownEnd === undefined || cooldownEnd > Date.now())) {
+  if (expectedStatus === 'cooldown' && (cooldownEnd === undefined || cooldownEnd > Date.now())) {
     return 'cooldown';
   }
 
@@ -91,7 +99,7 @@ async function assignTerminalOne(
       return 'unavailable';
     }
 
-    await tx.insert(puzzleAssignments).values({ runId, slot: 1, ...puzzle });
+    await tx.insert(puzzleAssignments).values({ runId, slot, ...puzzle });
 
     await tx.update(runTerminals)
       .set({ status: 'ready', cooldownUntil: null })
@@ -118,7 +126,7 @@ export async function getActivePuzzleImage(owner: RunOwner, assignmentId: string
 
   return image ?? null;
 }
-export async function submitTerminalOneAnswer(
+export async function submitTerminalAnswer(
   owner: RunOwner,
   runId: string,
   assignmentId: string,
@@ -156,6 +164,7 @@ export async function submitTerminalOneAnswer(
     if (!run) return 'unavailable';
 
     const [assignment] = await tx.select({
+      slot: puzzleAssignments.slot,
       solutionDigit: puzzleAssignments.solutionDigit,
       retiredAt: puzzleAssignments.retiredAt,
     })
@@ -163,7 +172,6 @@ export async function submitTerminalOneAnswer(
       .where(and(
         eq(puzzleAssignments.id, assignmentId),
         eq(puzzleAssignments.runId, run.id),
-        eq(puzzleAssignments.slot, 1),
       ));
 
     if (!assignment) return 'unavailable';
@@ -193,7 +201,7 @@ export async function submitTerminalOneAnswer(
     if (correct) {
       await tx.update(runTerminals)
         .set({ status: 'solved', solvedDigit: digit })
-        .where(and(eq(runTerminals.runId, runId), eq(runTerminals.slot, 1)));
+        .where(and(eq(runTerminals.runId, runId), eq(runTerminals.slot, assignment.slot)));
       await tx.update(puzzleAssignments)
         .set({ retiredAt: new Date() })
         .where(eq(puzzleAssignments.id, assignmentId));
@@ -219,7 +227,7 @@ export async function submitTerminalOneAnswer(
         .where(eq(puzzleAssignments.id, assignmentId));
       await tx.update(runTerminals)
         .set({ status: 'cooldown', cooldownUntil: new Date(now.getTime() + 10_000) })
-        .where(and(eq(runTerminals.runId, runId), eq(runTerminals.slot, 1)));
+        .where(and(eq(runTerminals.runId, runId), eq(runTerminals.slot, assignment.slot)));
     }
 
     return 'incorrect';

@@ -1,5 +1,5 @@
 import 'server-only';
-import { and, count, eq, exists, gt, inArray, isNull, sql } from 'drizzle-orm';
+import { and, count, eq, gt, inArray, isNull, sql } from 'drizzle-orm';
 import { db } from '@/src/db';
 import { appSessions, heistRuns, players, puzzleAssignments, puzzleSubmissions, runTerminals } from '@/src/db/schema';
 import { revokeSession } from '../auth/sessions';
@@ -9,7 +9,7 @@ type RunOwner = {
   sessionId: string;
 };
 
-const terminalSlots = [1, 2, 3] as const;
+export const terminalSlots = [1, 2, 3] as const;
 const openStatuses = ['preparing', 'active'] as const;
 
 export async function prepareHeist(owner: RunOwner) {
@@ -88,9 +88,17 @@ export async function prepareHeist(owner: RunOwner) {
 }
 
 export async function getPreparingHeist(owner: RunOwner, runId: string) {
-  const rows = await db.select({ slot: runTerminals.slot })
+  const rows = await db.select({
+      slot: runTerminals.slot,
+      ready: sql<boolean>`${runTerminals.status} = 'ready' AND ${puzzleAssignments.id} IS NOT NULL`,
+    })
     .from(heistRuns)
     .innerJoin(runTerminals, eq(runTerminals.runId, heistRuns.id))
+    .leftJoin(puzzleAssignments, and(
+      eq(puzzleAssignments.runId, runTerminals.runId),
+      eq(puzzleAssignments.slot, runTerminals.slot),
+      isNull(puzzleAssignments.retiredAt),
+    ))
     .where(and(
       eq(heistRuns.id, runId),
       eq(heistRuns.playerId, owner.playerId),
@@ -137,13 +145,17 @@ export async function startHeist(owner: RunOwner, runId:string){
         eq(heistRuns.sessionId, owner.sessionId),
         eq(heistRuns.status, 'preparing'),
         isNull(heistRuns.startedAt),
-        exists(tx.select({ slot: runTerminals.slot })
+        eq(sql<number>`(${tx.select({ total: count() })
           .from(runTerminals)
+          .innerJoin(puzzleAssignments, and(
+            eq(puzzleAssignments.runId, runTerminals.runId),
+            eq(puzzleAssignments.slot, runTerminals.slot),
+            isNull(puzzleAssignments.retiredAt),
+          ))
           .where(and(
             eq(runTerminals.runId, heistRuns.id),
-            eq(runTerminals.slot, 1),
             eq(runTerminals.status, 'ready'),
-          ))),
+          ))})`, terminalSlots.length),
       ))
       .returning({ id: heistRuns.id });
 
@@ -162,8 +174,9 @@ export async function startHeist(owner: RunOwner, runId:string){
 }
 
 export async function getActiveHeist(owner: RunOwner, runId: string) {
-  const [run] = await db.select({
+  const rows = await db.select({
     startedAt: heistRuns.startedAt,
+    slot: runTerminals.slot,
     solvedDigit: runTerminals.solvedDigit,
     cooldownUntil: runTerminals.cooldownUntil,
     assignmentId: puzzleAssignments.id,
@@ -178,13 +191,10 @@ export async function getActiveHeist(owner: RunOwner, runId: string) {
       })`.mapWith(Number),
   })
     .from(heistRuns)
-    .leftJoin(runTerminals, and(
-      eq(runTerminals.runId, heistRuns.id),
-      eq(runTerminals.slot, 1),
-    ))
+    .innerJoin(runTerminals, eq(runTerminals.runId, heistRuns.id))
     .leftJoin(puzzleAssignments, and(
       eq(puzzleAssignments.runId, heistRuns.id),
-      eq(puzzleAssignments.slot, 1),
+      eq(puzzleAssignments.slot, runTerminals.slot),
       isNull(puzzleAssignments.retiredAt),
     ))
     .where(and(
@@ -192,9 +202,20 @@ export async function getActiveHeist(owner: RunOwner, runId: string) {
       eq(heistRuns.playerId, owner.playerId),
       eq(heistRuns.sessionId, owner.sessionId),
       eq(heistRuns.status, 'active'),
-    ));
+    ))
+    .orderBy(runTerminals.slot);
 
-  return run?.startedAt ? { ...run, startedAt: run.startedAt } : null;
+  const [run] = rows;
+  if (!run?.startedAt) return null;
+  return {
+    startedAt: run.startedAt,
+    observedAtMs: Date.now(),
+    puzzleAlarmUntil: run.puzzleAlarmUntil,
+    wrongAnswers: run.wrongAnswers,
+    terminals: rows.map(({ slot, solvedDigit, cooldownUntil, assignmentId }) => ({
+      slot, solvedDigit, cooldownUntil, assignmentId,
+    })),
+  };
 }
 
 export async function abandonActiveHeist(owner: RunOwner, runId: string) {
